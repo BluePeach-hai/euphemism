@@ -2,10 +2,15 @@
 
 import os
 import os.path as osp
+import sys
 import json
 from PIL import Image
 import click
 from tqdm import tqdm
+
+# Add project root to Python path
+ROOT = osp.abspath(osp.join(osp.dirname(osp.abspath(__file__)), '..'))
+sys.path.insert(0, ROOT)
 
 import torch
 from torch.utils.data import DataLoader
@@ -14,7 +19,6 @@ from transformers import CLIPProcessor, CLIPVisionModel
 from euphemism.util import preprocess_path
 
 
-ROOT = osp.abspath(osp.join(osp.dirname(osp.abspath(__file__)), '..'))
 DATA_ROOT = osp.join(ROOT, 'data')
 
 
@@ -22,12 +26,12 @@ DATA_ROOT = osp.join(ROOT, 'data')
 @click.option(
     '--image-dir',
     type=click.Path(exists=True, dir_okay=True),
-    default=osp.join(DATA_ROOT, 'images'),
+    default=osp.join(DATA_ROOT, 'dalle_en'),
 )
 @click.option(
     '--save-dir',
     type=click.Path(exists=False, dir_okay=True, writable=True),
-    default=osp.join(DATA_ROOT, 'features'),
+    default=osp.join(DATA_ROOT, 'features_dalle_en'),
 )
 @click.option(
     '--model-name',
@@ -52,31 +56,41 @@ DATA_ROOT = osp.join(ROOT, 'data')
 def main(image_dir, save_dir, model_name, batch_size, device, num_workers):
     image_dir = preprocess_path(image_dir)
     save_dir = preprocess_path(save_dir)
-    os.makedirs(save_dir)
+    os.makedirs(save_dir, exist_ok=True)
 
     model = CLIPVisionModel.from_pretrained(model_name).half().to(device)
     model.eval()
     processor = CLIPProcessor.from_pretrained(model_name)
 
     dataset = ImageFolder(image_dir, transform=processor.feature_extractor)
-    loader = DataLoader(
-        dataset=dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        pin_memory=False,
-        num_workers=num_workers,
-    )
-
-    with torch.no_grad():
-        for i, (batch, classes) in enumerate(tqdm(loader)):
-            assert torch.prod(classes == i).item() == 1
-            term = dataset.classes[i]
-            pixel_values = batch['pixel_values'][0].half().to(device)
-            output = model(pixel_values=pixel_values)
-            features = output.pooler_output.mean(dim=0, keepdim=True).cpu().clone()
+    
+    # Process each class separately to avoid mixing classes in batches
+    for class_idx, class_name in enumerate(tqdm(dataset.classes)):
+        # Create a dataset for just this class
+        class_indices = [i for i, (_, c) in enumerate(dataset.samples) if c == class_idx]
+        class_subset = torch.utils.data.Subset(dataset, class_indices)
+        
+        loader = DataLoader(
+            dataset=class_subset,
+            batch_size=batch_size,
+            shuffle=False,
+            pin_memory=False,
+            num_workers=num_workers,
+        )
+        
+        all_features = []
+        with torch.no_grad():
+            for batch, _ in loader:
+                pixel_values = batch['pixel_values'][0].half().to(device)
+                output = model(pixel_values=pixel_values)
+                all_features.append(output.pooler_output)
+        
+        # Combine features for this class
+        if all_features:
+            features = torch.cat(all_features).mean(dim=0, keepdim=True).cpu().clone()
             torch.save(
                 features,
-                osp.join(save_dir, f'{term}.pt'),
+                osp.join(save_dir, f'{class_name}.pt'),
             )
 
 

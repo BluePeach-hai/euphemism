@@ -50,10 +50,10 @@ class GroundedBaseline(nn.Module):
 class HallucinationBaseline(GroundedBaseline):
     def forward(self, batch):
         assert batch.get('term_features') is not None
-        assert batch.get('defn_features') is not None
+        assert batch.get('desc_features') is not None
         term_features = self.projector(batch['term_features']).unsqueeze(1)
-        defn_features = self.projector(batch['defn_features']).unsqueeze(1)
-        visual_features = torch.cat([term_features, defn_features], dim=1)
+        desc_features = self.projector(batch['desc_features']).unsqueeze(1)
+        visual_features = torch.cat([term_features, desc_features], dim=1)
         return self.text_encoder(
             **batch['inputs'],
             visual_features=visual_features,

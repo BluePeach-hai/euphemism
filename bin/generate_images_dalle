@@ -1,0 +1,113 @@
+#!/usr/bin/env python
+
+import os
+import os.path as osp
+import sys
+# 将项目根目录添加到Python路径
+sys.path.insert(0, osp.abspath(osp.join(osp.dirname(__file__), '..')))
+
+import json
+from PIL import Image
+import click
+from tqdm import tqdm
+
+import numpy as np
+import torch
+from min_dalle import MinDalle
+from euphemism.util import preprocess_path
+
+
+ROOT = osp.abspath(osp.join(osp.dirname(osp.abspath(__file__)), '..'))
+DATA_ROOT = osp.join(ROOT, 'data')
+
+
+@click.command()
+@click.option(
+    '--save-dir',
+    type=click.Path(dir_okay=True),
+    default=osp.join(DATA_ROOT, 'dalle_en'),
+)
+@click.option(
+    '--grid-size',
+    type=int,
+    default=2,
+)
+@click.option(
+    '--seed',
+    type=int,
+    default=42,
+)
+@click.option(
+    '--num_inference_steps',
+    type=int,
+    default=25,
+)
+@click.option(
+    '--guidance_scale',
+    type=float,
+    default=7.5,
+)
+def main(save_dir, grid_size, seed, num_inference_steps, guidance_scale):
+    save_dir = preprocess_path(save_dir)
+
+    terms = dict()
+    with open(osp.join(DATA_ROOT, 'terms_with_descriptions_en.tsv'), 'r') as f:
+        lines = [l.strip().split('\t') for l in f.readlines()]
+        for term, defn, desc in lines:
+            terms[term] = defn + desc
+
+    with open(osp.join(DATA_ROOT, 'dataset_text_train.json'), 'r') as f:
+        train = json.load(f)
+
+    with open(osp.join(DATA_ROOT, 'dataset_text_test.json'), 'r') as f:
+        test = json.load(f)
+
+    items = [] # cat, key, text
+    for term in terms.keys():
+        items.append(('term', term.replace(' ', '_'), term))
+
+    for term, defn in terms.items():
+        items.append(('desc', term.replace(' ', '_'), defn))
+
+    #for x in train:
+        #items.append(('train', x['index'], x['sentence'].replace('@ ', '')))
+
+    #for x in test:
+        #items.append(('test', x['index'], x['sentence'].replace('@ ', '')))
+
+    os.makedirs(osp.join(save_dir, 'term_en_dalle'), exist_ok=True)
+    os.makedirs(osp.join(save_dir, 'desc_en_dalle'), exist_ok=True)
+    #os.makedirs(osp.join(save_dir, 'dataset_text_train'), exist_ok=True)
+    #os.makedirs(osp.join(save_dir, 'dataset_text_test'), exist_ok=True)
+
+    # 加载MinDalle模型
+    model = MinDalle(
+        is_mega=False,
+        is_reusable=True,
+        device="cuda"
+    )
+
+    for cat, key, value in tqdm(items, total=len(items)):
+        subdir = osp.join(save_dir, cat + '_en_dalle', str(key))
+        os.makedirs(subdir, exist_ok=True)
+        
+        # 为每个输入文本生成多张图像
+        num_images = grid_size ** 2
+        for i in range(num_images):
+            # 为每张图像使用不同的种子
+            current_seed = seed + i
+            value = f"a distinct product called {value}, visual differences emphasized"
+            # 使用MinDalle生成图像
+            image = model.generate_image(
+                text=value,
+                seed=current_seed,
+                grid_size=1
+            )
+            
+            # 保存图像
+            file_path = osp.join(subdir, f'{i:05d}.png')
+            image.save(file_path)
+
+
+if __name__ == "__main__":
+    main()

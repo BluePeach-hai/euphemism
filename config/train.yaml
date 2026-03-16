@@ -8,25 +8,26 @@ trainer:
   gradient_clip_val: 1.0
   val_check_interval: 1.0
   resume_from_checkpoint: null
-  accumulate_grad_batches: 1
-  num_sanity_val_steps: -1
+  accumulate_grad_batches: 8
+  num_sanity_val_steps: 0
 
 # data module
 data:
-  batch_size: 16
-  num_workers: 5
+  batch_size: 8
+  num_workers: 0
   seed: 42
-  text_input: 'raw_sentence'
-  use_definitions: false
-  use_images: false
-  use_hallucinations: false
+  text_input: 'text'
+  use_definitions: False
+  use_images: False
+  use_hallucinations: True
   val_percent: 0.2
+  #max_seq_len: 128 #优化显存
 
 # logger (tensorboard)
 logger:
-  name: null
-  version: null
-  save_dir: ~/logs/euphemism
+  name: stb_dfs_hallucinations_en
+  version: 20260112_2047
+  save_dir: E:/Classifier Guidance/euphemism/logs
 
 # checkpoint
 checkpoint:
@@ -46,5 +47,5 @@ hydra:
 
 defaults:
   - _self_
-  - model: TransformerBaseline
+  - model: HallucinationBaseline #基线模型名
   - override hydra/job_logging: disabled

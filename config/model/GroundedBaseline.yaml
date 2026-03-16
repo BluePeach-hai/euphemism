@@ -1,3 +1,3 @@
 name: "GroundedBaseline"
-text_encoder: "microsoft/deberta-v3-base"
+text_encoder: "microsoft/deberta-v3-small"
 freeze_text_encoder: false

@@ -1,3 +1,4 @@
+
 import os
 import os.path as osp
 
@@ -52,6 +53,13 @@ def process_config(config):
 def write_results(file_path, predictions):
     file_path = preprocess_path(file_path)
     with open(file_path, 'w') as f:
+        # Flatten the predictions if it's a list of lists
+        if predictions and isinstance(predictions[0], list):
+            flattened = []
+            for dataloader_predictions in predictions:
+                flattened.extend(dataloader_predictions)
+            predictions = flattened
+        
         for x in predictions:
             indexes, probs = x['indexes'], x['predictions']
             for i in range(len(indexes)):

@@ -1,7 +1,14 @@
 #!/usr/bin/env python
 
-import os
+# 添加当前目录到Python路径，确保能够找到euphemism模块
+import sys
 import os.path as osp
+
+# 获取脚本所在目录的父目录（项目根目录）
+project_root = osp.abspath(osp.join(__file__, '../..'))
+sys.path.insert(0, project_root)
+
+import os
 
 import pytorch_lightning as pl
 import hydra
@@ -19,14 +26,26 @@ CONFIG_DIR = osp.abspath(osp.join(__file__, "../..", "config"))
 def main(config):
     config = OmegaConf.to_container(config)
     config = pl.utilities.parsing.AttributeDict(config)
-    config['ckpt_path'] = preprocess_path(config['ckpt_path'])
-    assert osp.isfile(config['ckpt_path'])
-    assert config['output'] is not None
-    config['output'] = preprocess_path(config['output'])
+    ckpt = config.get('checkpoint_path')
+    if ckpt is None:
+        raise ValueError(
+            "checkpoint_path must be set for prediction, but got None"
+        )
+    config['checkpoint_path'] = preprocess_path(ckpt)
+    assert osp.isfile(config['checkpoint_path']), \
+        f"Checkpoint not found: {config['checkpoint_path']}"
+    assert osp.isfile(config['checkpoint_path'])
+    
+    output = config.get('output')
+    if output is None:
+        raise ValueError("output directory must be specified")
+
+    config['output'] = preprocess_path(output)
+
     pl.seed_everything(config["seed"])
     print(config)
 
-    experiment = Experiment.load_from_checkpoint(config['ckpt_path'])
+    experiment = Experiment.load_from_checkpoint(config['checkpoint_path'])
     config['model'] = experiment.config['model']
     data_config = experiment.config['data']
     config['data']['tokenizer'] = config['model']['text_encoder']
@@ -42,9 +61,13 @@ def main(config):
     
     # trainval, test = trainer.predict(experiment, datamodule=dm)
     test = trainer.predict(experiment, datamodule=dm)
+    #print(type(test[0]), test[0]) #测试输出形状
+    print(f"Type of test: {type(test)}")
+    print(f"Type of test[0]: {type(test[0])}")
+    print(f"Length of test: {len(test)}")
     output_dir = preprocess_path(osp.abspath(config['output']))
     os.makedirs(output_dir, exist_ok=True)
-    write_results(osp.join(output_dir, 'answer.txt'), test)
+    write_results(osp.join(output_dir, 'stb_dfs_hallucinations_en.txt'), test) #输出文件名
     # write_results(osp.join(output_dir, 'trainval.txt'), trainval)
 
 

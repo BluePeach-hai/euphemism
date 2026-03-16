@@ -1,6 +1,19 @@
+
 import torch
 import torch.nn as nn
 from torch import optim
+
+# 兼容性修复：在Python 3.10+中，Mapping和Sequence已从collections移到collections.abc
+import collections
+from collections.abc import Mapping, Sequence
+collections.Mapping = Mapping
+collections.Sequence = Sequence
+
+# 兼容性修复：numpy 2.0.0中移除了np.Inf别名，只支持np.inf
+import numpy as np
+if not hasattr(np, 'Inf'):
+    np.Inf = np.inf
+
 import pytorch_lightning as pl
 from torchmetrics.functional import f1_score
 
@@ -52,7 +65,12 @@ class Experiment(pl.LightningModule):
     def validation_epoch_end(self, outputs):
         pred = torch.cat([x['pred'] for x in outputs])
         gold = torch.cat([x['gold'] for x in outputs])
-        self.log('f1', f1_score(pred, gold), prog_bar=True)
+        f1 = f1_score(pred, gold, task='binary')  # 注意加 task 参数
+        #pred_list = [x['pred'].cpu() for x in outputs]
+        #gold_list = [x['gold'].cpu() for x in outputs]
+        #pred = torch.cat(pred_list)
+        #gold = torch.cat(gold_list)
+        self.log('f1',f1, prog_bar=True)
 
     def configure_optimizers(self):
         params = filter(lambda p: p.requires_grad, self.model.parameters())

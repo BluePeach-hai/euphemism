@@ -9,15 +9,85 @@ from transformers.models.deberta_v2.modeling_deberta_v2 import (
     DebertaV2Layer,
     ConvLayer,
     ContextPooler,
-    StableDropout,
     build_relative_position,
     DebertaV2PreTrainedModel,
-    DEBERTA_START_DOCSTRING,
-    DEBERTA_INPUTS_DOCSTRING,
-    _CONFIG_FOR_DOC,
-    _CHECKPOINT_FOR_DOC,
-    _TOKENIZER_FOR_DOC,
 )
+from transformers.models.deberta_v2 import configuration_deberta_v2
+
+# Define local versions of the docstring constants since they're not available in newer transformers versions
+DEBERTA_START_DOCSTRING = """
+    The DeBERTa model was proposed in [DeBERTa: Decoding-enhanced BERT with Disentangled Attention]
+    (https://arxiv.org/abs/2006.03654) by Pengcheng He, Xiaodong Liu, Jianfeng Gao, Weizhu Chen.
+
+    This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic
+    methods the library implements for all its model (such as downloading or saving, resizing the input embeddings,
+    pruning heads etc.)
+
+    This model is also a PyTorch [torch.nn.Module](https://pytorch.org/docs/stable/nn.html#torch.nn.Module)
+    subclass. Use it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to
+    general usage and behavior.
+
+    Parameters:
+        config ([`~DebertaV2Config`]): Model configuration class with all the parameters of the model.
+            Initializing with a config file does not load the weights associated with the model, only the
+            configuration. Check out the [`~PreTrainedModel.from_pretrained`] method to load the model weights.
+"""
+
+DEBERTA_INPUTS_DOCSTRING = """
+    Args:
+        input_ids (`torch.LongTensor` of shape `({0})`):
+            Indices of input sequence tokens in the vocabulary. Padding will be ignored by default should you provide it.
+
+            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
+            [`PreTrainedTokenizer.__call__`] for details.
+
+            [What are input IDs?](../glossary#input-ids)
+        attention_mask (`torch.FloatTensor` of shape `({0})`, *optional*):
+            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
+
+            - 1 for tokens that are **not masked**, 0 for tokens that are **masked**.
+
+            [What are attention masks?](../glossary#attention-mask)
+        token_type_ids (`torch.LongTensor` of shape `({0})`, *optional*):
+            Segment token indices to indicate first and second portions of the inputs. Indices are selected in `[0, 1]`:
+
+            - 0 corresponds to a *sentence A* token,
+            - 1 corresponds to a *sentence B* token.
+
+            [What are token type IDs?](../glossary#token-type-ids)
+        position_ids (`torch.LongTensor` of shape `({0})`, *optional*):
+            Indices of positions of each input sequence tokens in the position embeddings. Selected in the range `[0,
+            config.max_position_embeddings - 1]`.
+
+            [What are position IDs?](../glossary#position-ids)
+        inputs_embeds (`torch.FloatTensor` of shape `({0}, hidden_size)`, *optional*):
+            Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation. This
+            is useful if you want more control over how to convert `input_ids` indices into associated vectors than the
+            model's internal embedding lookup matrix.
+        output_attentions (`bool`, *optional*):
+            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
+            tensors for more detail.
+        output_hidden_states (`bool`, *optional*):
+            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
+            more detail.
+        return_dict (`bool`, *optional*):
+            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
+"""
+
+# Use dummy values for documentation constants
+_CONFIG_FOR_DOC = configuration_deberta_v2.DebertaV2Config
+_CHECKPOINT_FOR_DOC = "microsoft/deberta-v2-xlarge"
+_TOKENIZER_FOR_DOC = "DebertaV2Tokenizer"
+# Implement local version of StableDropout since it's not available in newer transformers versions
+class StableDropout(nn.Module):
+    def __init__(self, drop_prob):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        dropout_mask = torch.empty_like(x).bernoulli_(1 - self.drop_prob)
+        dropout_mask = dropout_mask / (1 - self.drop_prob)
+        return x * dropout_mask
 from transformers.modeling_outputs import (
     BaseModelOutput,
     SequenceClassifierOutput,
@@ -132,7 +202,8 @@ class CustomDebertaV2Encoder(nn.Module):
             self.LayerNorm = LayerNorm(config.hidden_size, config.layer_norm_eps, elementwise_affine=True)
 
         self.conv = ConvLayer(config) if getattr(config, "conv_kernel_size", 0) > 0 else None
-        self.gradient_checkpointing = False
+        self.gradient_checkpointing = True
+        #原为self.gradient_checkpointing = False
 
     def get_rel_embedding(self):
         rel_embeddings = self.rel_embeddings.weight if self.relative_attention else None

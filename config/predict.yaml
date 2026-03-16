@@ -1,6 +1,6 @@
 seed: 12345
-ckpt_path: null
-output: null
+checkpoint_path: "E:/Classifier Guidance/euphemism/logs/stb_dfs_hallucinations_en/version_202601122047/checkpoints/epoch=48-step=5096.ckpt"
+output: "./pred_results"
 
 trainer:
   gpus: 1
@@ -9,13 +9,13 @@ trainer:
   gradient_clip_val: 1.0
   val_check_interval: 1.0
   resume_from_checkpoint: null
-  accumulate_grad_batches: 1
+  accumulate_grad_batches: 8
   num_sanity_val_steps: 0
 
 # data module
 data:
-  batch_size: 16
-  num_workers: 5
+  batch_size: 8
+  num_workers: 0
   seed: 42
 
 # hydra-specific

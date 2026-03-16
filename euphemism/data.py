@@ -1,15 +1,27 @@
 import os
 import os.path as osp
 import json
-import re
-
-from tqdm import tqdm
-import spacy
+import jieba
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from transformers import AutoTokenizer
-import pytorch_lightning as pl
+from functools import partial
+from tqdm import tqdm
 
+# pytorch_lightning 兼容
+try:
+    import pytorch_lightning as pl
+    LightningDataModule = None
+    try:
+        from pytorch_lightning import LightningDataModule
+    except ImportError:
+        try:
+            from pytorch_lightning.core.datamodule import LightningDataModule
+        except ImportError:
+            class LightningDataModule: pass
+except ImportError:
+    pl = None
+    class LightningDataModule: pass
 
 ROOT = osp.abspath(osp.join(osp.dirname(osp.abspath(__file__)), '..'))
 DATA_ROOT = osp.join(ROOT, 'data')
@@ -28,22 +40,20 @@ class EuphemismDataset(Dataset):
         return self.items[index]
 
 
-class EuphemismDataModule(pl.LightningDataModule):
-    def __init__(
-        self,
-        root=DATA_ROOT,
-        text_input='raw_sentence',
-        use_definitions=False,
-        use_images=False,
-        use_hallucinations=False,
-        batch_size=64,
-        num_workers=0,
-        tokenizer='microsoft/deberta-base',
-        seed=42,
-        val_percent=0.2,
-    ):
+class EuphemismDataModule(LightningDataModule):
+    def __init__(self,
+                 root=DATA_ROOT,
+                 text_input='text',
+                 use_definitions=False,
+                 use_images=False,
+                 use_hallucinations=True,
+                 batch_size=64,
+                 num_workers=0,
+                 tokenizer='microsoft/deberta-base',
+                 seed=42,
+                 val_percent=0.2,
+                 use_chinese_tokenization=True):
         super().__init__()
-        assert text_input in ('utterance', 'sentence', 'raw_sentence')
         self.root = osp.abspath(osp.expanduser(root))
         self.text_input = text_input
         self.use_definitions = use_definitions
@@ -51,121 +61,121 @@ class EuphemismDataModule(pl.LightningDataModule):
         self.use_hallucinations = use_hallucinations
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer)
         self.seed = seed
         self.torch_rng = torch.Generator().manual_seed(seed)
         self.val_percent = val_percent
-        self.nlp = spacy.load("en_core_web_sm")
+        self.use_chinese_tokenization = use_chinese_tokenization
+
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer, use_fast=True)
+
+        # 中文分词
+        self.nlp = jieba  # 中文用jieba，不需要spacy
+
+        # 初始化特征字典
+        self.image_features = {}
+        self.term_features = {}
+        self.desc_features = {}
+
+    def tokenize_chinese(self, text):
+        return ' '.join(jieba.cut(text))
 
     def prepare_split(self, split='train', file_path=None):
-        with open(osp.join(self.root, f'{split}.csv')) as f:
-            raw = [line.strip() for line in f.readlines()][1:]
+        import csv
+        input_file = osp.join(self.root, f'{split}.csv')
         data = []
-        if split == 'train':
-            pattern = r'(\d+)\,\"?(.+)\"?\,(0|1)'
-        elif split == 'test':
-            pattern = r'(\d+)\,\"?(.+)\"?'
-
-        for line in tqdm(raw):
-            groups = re.search(pattern, line)
-            index = int(groups.group(1))
-            utterance = groups.group(2)
-
-            if split == 'train':
-                label = int(groups.group(3))
-            else:
-                label = None
-
-            doc = self.nlp(utterance)
-            pre, post, found = [], [], False
-            for sent in doc.sents:
-                match = re.search(r"\<(.+)\>", sent.text)
-                if match is None and not found:
-                    pre.append(sent.text)
-                elif match is None and found:
-                    post.append(sent.text)
-                else:
-                    found = True
-                    raw_sentence = sent.text
-                    phrase = match.group(1)
-                    lemma = ' '.join([t.lemma_ for t in self.nlp(phrase)])
-                    sentence = raw_sentence.replace(f'<{phrase}>', phrase)
-
-            data.append({
-                'index': index,
-                'utterance': utterance,
-                'label': label,
-                'pre': ' '.join(pre),
-                'post': ' '.join(post),
-                'raw_sentence': raw_sentence,
-                'phrase': phrase.lower(),
-                'sentence': sentence,
-                'lemmatized': lemma.lower(),
-            })
-
-        if file_path is None:
-            return
-        with open(osp.abspath(file_path), 'w') as f:
-            json.dump(data, f, indent=2)
+        if osp.exists(input_file):
+            with open(input_file, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for i, row in enumerate(tqdm(reader, desc=f"处理 {split} 数据集")):
+                    text = row.get('text', '')
+                    segmented_text = self.tokenize_chinese(text)
+                    keywords = row.get('keywords', '')
+                    segmented_keywords = self.tokenize_chinese(keywords) if keywords else ''
+                    data.append({
+                        'index': i,
+                        'text': text,
+                        'segmented_text': segmented_text,
+                        'is_drug_related': int(row.get('is_drug_related', 0)),
+                        'original_keyword': row.get('原始关键词', ''),
+                        'final_keyword': row.get('最终合并关键词', ''),
+                        'keywords': keywords,
+                        'segmented_keywords': segmented_keywords,
+                        'main_type': row.get('main_type', ''),
+                    })
+        if file_path is not None:
+            with open(osp.abspath(file_path), 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
 
     def prepare_data(self):
-        train_file = osp.abspath(osp.join(self.root, 'train.json'))
-        test_file = osp.abspath(osp.join(self.root, 'test.json'))
-
-        if not osp.isfile(train_file):
-            self.prepare_split('train', train_file)
-
-        if not osp.isfile(test_file):
-            self.prepare_split('test', test_file)
+        self.prepare_split('dataset_text', osp.join(self.root, 'dataset_text.json'))
 
     def setup_features(self, features_path):
         features = dict()
-        file_names = os.listdir(features_path)
-        for file_name in file_names:
+        if not osp.exists(features_path):
+            return features
+        for file_name in os.listdir(features_path):
             file_path = osp.join(features_path, file_name)
             term = osp.splitext(file_name)[0].replace('_', ' ')
             features[term] = torch.load(file_path)
         return features
 
     def setup(self, stage='fit'):
-        # load terms
-        with open(osp.join(self.root, 'terms.tsv'), 'r') as f:
-            lines = [line.strip().split('\t') for line in f.readlines()][1:]
-            self.terms = dict()
-            for (term, definition) in lines:
-                self.terms[term] = definition
+        # 1. 加载中文术语表
+        self.terms = {}
+        terms_file = osp.join(self.root, 'terms.tsv')
+        if osp.exists(terms_file):
+            try:
+                with open(terms_file, 'r', encoding='utf-8') as f:
+                    lines = [line.strip().split('\t') for line in f.readlines()][1:]
+                    for term, definition in lines:
+                        self.terms[term] = definition
+            except Exception as e:
+                print(f"加载中文术语表失败: {e}")
 
-        percent = self.val_percent
-        with open(osp.join(self.root, 'train.json'), 'r') as f:
-            labeled = json.load(f)
-        num_labeled_examples = len(labeled)
-        num_train_examples = int((1-percent) * num_labeled_examples)
-        num_val_examples = num_labeled_examples - num_train_examples
-        train_data, val_data = random_split(
-            labeled,
-            [num_train_examples, num_val_examples],
-            generator=self.torch_rng,
-        )
+        # 2. 加载完整 JSON 数据集
+        dataset_file = osp.join(self.root, 'dataset_text.json')
+        if osp.exists(dataset_file):
+            with open(dataset_file, 'r', encoding='utf-8') as f:
+                labeled = json.load(f)
 
-        self.labeled_data = EuphemismDataset(labeled, 'trainval')
-        self.train_data = EuphemismDataset(train_data, 'train')
-        self.val_data = EuphemismDataset(val_data, 'val')
-        with open(osp.join(self.root, 'test.json'), 'r') as f:
-            self.test_data = EuphemismDataset(json.load(f), 'test')
-        
-        self.image_features = dict()
+            num_total = len(labeled)
+            num_test = int(0.1 * num_total)  # 例如 10% 作为测试集
+            num_trainval = num_total - num_test
+
+            # 随机划分测试集和剩余集
+            remaining_data, test_data = random_split(
+                labeled, [num_trainval, num_test], generator=self.torch_rng
+            )
+
+            # 再划分训练集和验证集
+            num_train = int((1 - self.val_percent) * num_trainval)
+            num_val = num_trainval - num_train
+            train_data, val_data = random_split(
+                remaining_data, [num_train, num_val], generator=self.torch_rng
+            )
+
+            self.train_data = EuphemismDataset(train_data, 'train')
+            self.val_data = EuphemismDataset(val_data, 'val')
+            self.test_data = EuphemismDataset(test_data, 'test')
+
+        # 3. 加载图像特征
         if self.use_images:
-            feature_dir = osp.join(self.root, 'download', 'features')
+            feature_dir = osp.join(self.root, 'features_dfs_en')
             self.image_features = self.setup_features(feature_dir)
 
+        # 4. 加载幻觉特征
         self.term_features = dict()
-        self.defn_features = dict()
+        self.desc_features = dict()
         if self.use_hallucinations:
-            self.term_features = self.setup_features(
-                osp.join(self.root, 'dalle_features', 'term'))
-            self.defn_features = self.setup_features(
-                osp.join(self.root, 'dalle_features', 'defn'))
+            features_dir = osp.join(self.root, 'features_dfs_en')
+            term_file = osp.join(features_dir, 'term_en.pt')
+            desc_file = osp.join(features_dir, 'desc_en.pt')
+            if osp.exists(term_file):
+                self.term_features = torch.load(term_file)
+            if osp.exists(desc_file):
+                self.desc_features = torch.load(desc_file)
 
+    # ---------------- DataLoader ----------------
     def _dataloader(self, dataset, split, shuffle=False):
         return DataLoader(
             dataset,
@@ -182,7 +192,7 @@ class EuphemismDataModule(pl.LightningDataModule):
                 image_features=self.image_features,
                 use_hallucinations=self.use_hallucinations,
                 term_features=self.term_features,
-                defn_features=self.defn_features,
+                desc_features=self.desc_features
             ),
         )
 
@@ -193,82 +203,78 @@ class EuphemismDataModule(pl.LightningDataModule):
         return self._dataloader(self.val_data, 'val')
 
     def predict_dataloader(self):
-        return [
-            # self._dataloader(self.labeled_data, 'trainval'),
-            self._dataloader(self.test_data, 'test'),
-        ]
+        return [self._dataloader(self.test_data, 'test')]
 
+# ---------------- collate_fn ----------------
 
-def create_collate_fn(
-    split,
-    tokenizer,
-    text_input,
-    use_definitions,
-    terms,
-    use_images,
-    image_features,
-    use_hallucinations,
-    term_features,
-    defn_features,
-):
-    def helper(batch, key):
-        return [x.get(key) for x in batch]
+def _helper(batch, key):
+    return [x.get(key) for x in batch]
 
-    def get_sentences_with_definitions(batch):
-        sentences = []
-        for item in batch:
-            term = item.get('lemmatized', 'unknown')
-            defn = terms.get(term, 'none')
-            sent = item[text_input]
-            prompt = f'Term: {term}. Definition: {defn}. Sentence: {sent}'
-            sentences.append(prompt)
-        return sentences
-
-    def get_features(batch, features_dict):
-        features = []
-        for item in batch:
-            term = item.get('lemmatized')
-
-            # FIXME: hardcoded bug fix show!
-            if term == 'enhance " " interrogation technique':
-                term = '"enhance "" "" interrogation technique"'
-            if term == 'golden " " year':
-                term = '"golden "" "" year"'
-
-            this = features_dict.get(term)
-            features.append(this)
-        return torch.cat(features, dim=0)
-
-    def _collate_fn(batch):
-        indexes = torch.tensor(helper(batch, 'index'))
+def _get_sentences_with_definitions(batch, terms, text_input, use_definitions=True):
+    sentences = []
+    for item in batch:
+        term = item.get('final_keyword', item.get('original_keyword', '未知'))
+        sent = item[text_input]
         if use_definitions:
-            sentences = get_sentences_with_definitions(batch)
+            desc = terms.get(term, '无定义')
+            prompt = f"术语: {term}。定义: {desc}。原句: {sent}"
         else:
-            sentences = helper(batch, text_input)
-        sentences = [x.replace('@ ', '') for x in sentences]
-        inputs = tokenizer(sentences, return_tensors='pt', padding=True)
+            prompt = sent
+        # 中文分词
+        prompt = ' '.join(jieba.cut(prompt))
+        sentences.append(prompt)
+    return sentences
 
-        batch_image_features = None
-        if use_images:
-            batch_image_features = get_features(batch, image_features)
-        
-        batch_term_features = batch_defn_features = None
-        if use_hallucinations:
-            batch_term_features = get_features(batch, term_features)
-            batch_defn_features = get_features(batch, defn_features)
+def _get_features(batch, features_dict):
+    features = []
+    batch_size = len(batch)
+    # 处理 features_dict 是张量的情况
+    if isinstance(features_dict, torch.Tensor):
+        # 为每个样本复制相同的特征
+        for _ in batch:
+            features.append(features_dict)
+    else:
+        # 处理 features_dict 是字典的情况
+        for item in batch:
+            term = item.get('final_keyword', item.get('original_keyword', ''))
+            feat = features_dict.get(term, torch.zeros(1, 1024))
+            features.append(feat)
+    return torch.cat(features, dim=0)
 
-        labels = None
-        if split != 'test':
-            labels = torch.tensor(helper(batch, 'label')).long()
+def _collate_fn(batch, split, tokenizer, text_input, use_definitions, terms,
+                use_images, image_features, use_hallucinations, term_features, desc_features):
+    indexes = torch.tensor(_helper(batch, 'index'))
+    sentences = _get_sentences_with_definitions(batch, terms, text_input, use_definitions)
+    inputs = tokenizer(sentences, return_tensors='pt', padding=True, truncation=True, max_length=256)
+    labels = torch.tensor(_helper(batch, 'is_drug_related')).long() if split != 'test' else None
 
-        return {
-            'indexes': indexes,
-            'inputs': inputs,
-            'labels': labels,
-            'image_features': batch_image_features,
-            'term_features': batch_term_features,
-            'defn_features': batch_defn_features,
-        }
-    return _collate_fn
+    batch_image_features = _get_features(batch, image_features) if use_images else None
 
+    batch_term_features = batch_desc_features = None
+    if use_hallucinations:
+        batch_term_features = _get_features(batch, term_features)
+        batch_desc_features = _get_features(batch, desc_features)
 
+    return {
+        'indexes': indexes,
+        'inputs': inputs,
+        'labels': labels,
+        'image_features': batch_image_features,
+        'term_features': batch_term_features,
+        'desc_features': batch_desc_features
+    }
+
+def create_collate_fn(split, tokenizer, text_input, use_definitions, terms,
+                      use_images, image_features, use_hallucinations,
+                      term_features, desc_features):
+    return partial(_collate_fn,
+                   split=split,
+                   tokenizer=tokenizer,
+                   text_input=text_input,
+                   use_definitions=use_definitions,
+                   terms=terms,
+                   use_images=use_images,
+                   image_features=image_features,
+                   use_hallucinations=use_hallucinations,
+                   term_features=term_features,
+                   desc_features=desc_features)
